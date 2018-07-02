@@ -1,37 +1,111 @@
 #requires -version 4.0
+
+function Check-Servers {
+  Param(
+    [parameter(Mandatory=$true)]
+    [String[]]
+    $Servers 
+  )
+  $computers = [String[]]@()
+  $I = 0
+  foreach ($computer in $Servers) {
+    try {
+      Test-WSMan -ComputerName $computer -Authentication default  -ErrorAction Stop | Out-Null
+      $computers += $computer
+    } catch  {
+      Write-Host "It is not possible access computer: $computer" -ForegroundColor Red
+    }
+    $I++
+    $percentil = ($I / $Servers.Count) * 100
+    Write-Progress -Activity "Testing servers connection..." -Status "$([int]$percentil)% Complete:" -PercentComplete $percentil
+  }
+  return $computers
+}
+
+function Get-ServersInformation {
+  Param(
+    [parameter(Mandatory=$true)]
+    [String[]]
+    $Servers 
+  )
+  $wmiObjects = [ordered]@{
+    Win32_Operatingsystem = @{
+      Param = @(@{Name="Computername";Expression={$_.PSComputername}},"InstallDate","Caption","Version","OSArchitecture");
+      Filter = $null;
+      Sort = $null
+    }
+    Win32_Computersystem = @{
+      Param = @("PSComputername","TotalPhysicalMemory","HyperVisorPresent","NumberOfProcessors","NumberofLogicalProcessors", "Domain");
+      Filter = $null;
+      Sort = $null
+    }
+    Win32_Computersystemproduct = @{
+      Param = @("PSComputername", "Name", "Vendor", "uuid");
+      Filter = $null;
+      Sort = $null
+    }
+    Win32_DiskDrive = @{
+      Param = @("PSComputername", "Caption", "Model", "Size", "SerialNumber", "DeviceID", "InterfaceType");
+      Filter = $null;
+      Sort = $null
+    }
+    Win32_NetworkAdapter = @{
+      Param = @("PSComputername", "Name", "Speed", "MACAddress", "NetEnabled");
+      Filter = "AdapterTypeID = 0 or AdapterTypeID = 9 or ConfigManagerErrorCode = 22";
+      Sort = $null
+    }
+    Win32_NetworkAdapterConfiguration = @{
+      Param = @("PSComputername", "MACAddress", "DHCPEnabled", "DefaultIPGateway", "IPAddress", "IPSubnet", "DNSServerSearchOrder");
+      Filter = "MACAddress is not null";
+      Sort = $null
+    }
+    Win32_Service = @{
+      Param = @("PSComputername","Name","Displayname","StartMode","State","StartName","ProcessID");
+      Filter = "State = 'Running'";
+      Sort = "ProcessID"
+    }
+    Win32_NetworkOpenPort = $null
+    
+  }
+  $wmiValues = [ordered]@{
+    Win32_Operatingsystem = $null;
+    Win32_Computersystem = $null;
+    Win32_Computersystemproduct = $null;
+    Win32_DiskDrive = $null;
+    Win32_NetworkAdapter = $null;
+    Win32_NetworkAdapterConfiguration = $null;
+    Win32_NetworkOpenPort = $null;
+    Win32_Service = $null;
+  }
+  $I = 0
+  foreach ($wmiObjectKey in $wmiObjects.Keys) {
+    $wmiObject = $wmiObjects[$wmiObjectKey]
+    if ($wmiObjectKey -ne "Win32_NetworkOpenPort") {
+      if ($wmiObject.Sort -eq $null) {
+        $wmiValues[$wmiObjectKey] = gwmi $wmiObjectKey -ComputerName $computers -Filter $wmiObject.Filter | Select-Object $wmiObject.Param
+      } else {
+        $wmiValues[$wmiObjectKey] = gwmi $wmiObjectKey -ComputerName $computers -Filter $wmiObject.Filter | Select-Object $wmiObject.Param | Sort $wmiObject.Sort
+      }
+    } else {
+      $wmiValues[$wmiObjectKey] = Invoke-Command -ComputerName $computers {c:\windows\system32\netstat.exe -ano}
+    }
+    $I++
+    $percentil = ($I / $wmiObjects.Keys.Count) * 100
+    Write-Progress -Activity "Reading data from servers..." -Status "$([int]$percentil)% Complete:" -PercentComplete $percentil
+  }
+  return $wmiValues
+}
+
 function Get-Invetary {
   Param($Out="C:\Work\MyInventory.xml", $Servers="C:\Users\pb003283\Documents\myservers.txt")
-  Write-Host "Creating computer list" -ForegroundColor Green
-  #process list of computers filtering out those offline
-  $computers = Get-Content $Servers | Where { Test-WSMan $_ -ErrorAction SilentlyContinue}
- 
-  Write-Host "Getting Operating System information" -ForegroundColor Green
-  $os = gwmi Win32_Operatingsystem -ComputerName $computers | Select @{Name="Computername";Expression={$_.PSComputername}},InstallDate,Caption,Version,OSArchitecture
- 
-  Write-Host "Getting Computer system information" -ForegroundColor Green
-  $cs = gwmi Win32_Computersystem -ComputerName $computers | Select PSComputername,TotalPhysicalMemory,HyperVisorPresent,NumberOfProcessors,NumberofLogicalProcessors, Domain
-  $csp = gwmi  Win32_Computersystemproduct -ComputerName $computers | Select PSComputername, Name, Vendor, uuid
-
-  Write-Host "Getting Computer system hard driver" -ForegroundColor Green
-  $hd = gwmi Win32_DiskDrive -ComputerName $computers | Select Caption, Model, Size, SerialNumber, DeviceID, InterfaceType, PSComputername
-
-  Write-Host "Getting Computer system network adpater" -ForegroundColor Green
-  $netAdapter = gwmi Win32_NetworkAdapter -ComputerName $computers -Filter "AdapterTypeID = 0 or AdapterTypeID = 9 or ConfigManagerErrorCode = 22" | Select PSComputername, Name, Speed, MACAddress, NetEnabled
-  $netAdapterConf = gwmi Win32_NetworkAdapterConfiguration -ComputerName $computers -Filter "MACAddress is not null" |select PSComputername, MACAddress, DHCPEnabled, DefaultIPGateway, IPAddress, IPSubnet, DNSServerSearchOrder
-  
-  Write-Host "Getting Open Ports" -ForegroundColor Green
-  $openPorts = Invoke-Command -ComputerName $computers {c:\windows\system32\netstat.exe -ano}
-
-  Write-Host "Getting Services" -ForegroundColor Green
-  $services = gwmi Win32_Service -ComputerName $computers -Filter "State = 'Running'" | Select PSComputername,Name,Displayname,StartMode,State,StartName,ProcessID | Sort ProcessID
-
-  Write-Host "Initializing new XML document" -ForegroundColor Green
-  [xml]$Doc = New-Object System.Xml.XmlDocument
+  $computers = Check-Servers -Servers (Get-Content $Servers)
+  $wmiData = Get-ServersInformation -Servers $computers
+  [xml]$XML = New-Object System.Xml.XmlDocument
  
   #create declaration
-  $dec = $Doc.CreateXmlDeclaration("1.0","UTF-8",$null)
-  #append to document
-  $doc.AppendChild($dec) | Out-Null
+  $dec = $XML.CreateXmlDeclaration("1.0","UTF-8",$null)
+  #append to XMLument
+  $XML.AppendChild($dec) | Out-Null
  
   #create a comment and append it in one line
   $text = 
@@ -40,15 +114,19 @@ function Get-Invetary {
   Generated $(Get-Date)
   v1.0
 "@
-  $doc.AppendChild($doc.CreateComment($text)) | Out-Null
+  $XML.AppendChild($XML.CreateComment($text)) | Out-Null
   #create root Node
-  $root = $doc.CreateNode("element","Computers",$null)
+  $root = $XML.CreateNode("element","Computers",$null)
  
   #create a node for each computer
-  foreach ($computer in $Computers) {
-    Write-Host "Adding inventory information for $computer" -ForegroundColor Green
-    $c = $doc.CreateNode("element","Computer",$null)
-    $pcID = $csp | where {$_.pscomputername -eq $Computer}
+  $I = 0
+  foreach ($computer in $computers) {
+    $I++
+    $percentil = ($I / $computers.Count) * 100
+    Write-Progress -Activity "Creating XML for server $computer..." -Status "$([int]$percentil)% Complete:" -PercentComplete $percentil
+
+    $c = $XML.CreateNode("element","Computer",$null)
+    $pcID =  $wmiData.Win32_Computersystemproduct | where {$_.pscomputername -eq $Computer}
     #add an attribute for the name
     $c.SetAttribute("Name",$computer) | Out-Null
     $c.SetAttribute("Id", $pcID.uuid)| Out-Null
@@ -56,20 +134,20 @@ function Get-Invetary {
     $c.SetAttribute("Vendor", $pcID.Vendor)| Out-Null
 
     #create node for OS
-    $osnode = $doc.CreateNode("element","OperatingSystem",$null)
+    $osnode = $XML.CreateNode("element","OperatingSystem",$null)
 
     #get related data
-    $data = $os|where {$_.computername -eq $Computer}
+    $data =  $wmiData.Win32_Operatingsystem | where {$_.computername -eq $Computer}
 
     #create an element
-    $e = $doc.CreateElement("Name")
+    $e = $XML.CreateNode("element","Name",$null)
     #assign a value
     $e.InnerText = $data.Caption
     $osnode.AppendChild($e) | Out-Null
  
     #create elements for the remaining properties
     "Version","InstallDate","OSArchitecture" | foreach {
-      $e = $doc.CreateElement($_)
+      $e = $XML.CreateNode("element",$_,$null)
       $e.InnerText = $data.$_
       $osnode.AppendChild($e) | Out-Null
     }
@@ -78,36 +156,36 @@ function Get-Invetary {
     $c.AppendChild($osnode) | Out-Null
  
     #create node for Computer system
-    $csnode = $doc.CreateNode("element","ComputerSystem",$null)
-    $cshd = $doc.CreateNode("element","HDs",$null)
-    $csInterface = $doc.CreateNode("element","NetworkInterfaces",$null)
-    $csOpenPorts = $doc.CreateNode("element","OpenPorts",$null)
+    $csnode = $XML.CreateNode("element","ComputerSystem",$null)
+    $cshd = $XML.CreateNode("element","HDs",$null)
+    $csInterface = $XML.CreateNode("element","NetworkInterfaces",$null)
+    $csOpenPorts = $XML.CreateNode("element","OpenPorts",$null)
 
     #this is using the original property name
-    $data = $cs | where {$_.pscomputername -eq $Computer}
-    $dataHDs = $hd | where {$_.pscomputername -eq $Computer}
-    $dataNetAdapters = $netAdapter | where {$_.pscomputername -eq $Computer} | sort Name
-    $dataNetConfigs = $netAdapterConf | where {$_.pscomputername -eq $Computer}
-    $dataOpenPorts = (($openPorts | where {$_.pscomputername -eq $Computer} | Select-String -Pattern '\s+(TCP.*LISTENING|UDP)') -replace '^\s+', '') -replace '\s+',' '
+    $data =  $wmiData.Win32_Computersystem | where {$_.pscomputername -eq $Computer}
+    $dataHDs =  $wmiData.Win32_DiskDrive | where {$_.pscomputername -eq $Computer}
+    $dataNetAdapters =  $wmiData.Win32_NetworkAdapter | where {$_.pscomputername -eq $Computer} | sort Name
+    $dataNetConfigs =  $wmiData.Win32_NetworkAdapterConfiguration | where {$_.pscomputername -eq $Computer}
+    $dataOpenPorts = (($wmiData.Win32_NetworkOpenPort | where {$_.pscomputername -eq $Computer} | Select-String -Pattern '\s+(TCP.*LISTENING|UDP)') -replace '^\s+', '') -replace '\s+',' '
  
     #get a list of properties except PSComputername
-    $props = ($cs[0] | Get-Member -MemberType Properties | where Name -ne 'PSComputername').Name
-    $propsHD = ($hd[0] | Get-Member -MemberType Properties | where Name -ne 'PSComputername').Name
-    $propsNetInterface = ($netAdapter[0] | Get-Member -MemberType Properties | where Name -ne 'PSComputername').Name
-    $propsNetConf = ($netAdapterConf[0] | Get-Member -MemberType Properties | where Name -ne 'PSComputername').Name
+    $props = ($wmiData.Win32_Computersystem[0] | Get-Member -MemberType Properties | where Name -ne 'PSComputername').Name
+    $propsHD = ($wmiData.Win32_DiskDrive[0] | Get-Member -MemberType Properties | where Name -ne 'PSComputername').Name
+    $propsNetInterface = ($wmiData.Win32_NetworkAdapter[0] | Get-Member -MemberType Properties | where Name -ne 'PSComputername').Name
+    $propsNetConf = ($wmiData.Win32_NetworkAdapterConfiguration[0] | Get-Member -MemberType Properties | where Name -ne 'PSComputername').Name
 
     #create elements for each property
     $props | Foreach {
-      $e = $doc.CreateElement($_)
+      $e = $XML.CreateNode("element",$_,$null)
       $e.InnerText = $data.$_
       $csnode.AppendChild($e) | Out-Null
     }
     #create hds elements
     foreach ($dataHD in $dataHDs) {
-      $hdNode = $doc.CreateNode("element","HD",$null)
+      $hdNode = $XML.CreateNode("element","HD",$null)
       $propsHD | Foreach {
         if ($dataHD.$_) {
-          $e = $doc.CreateElement($_)
+          $e = $XML.CreateNode("element",$_,$null)
           $e.InnerText = $dataHD.$_
           $hdNode.AppendChild($e) | Out-Null
         }
@@ -116,20 +194,20 @@ function Get-Invetary {
     }
     #create net adapter elements
     foreach($dataNetAdapter in $dataNetAdapters) {
-      $netAdapterNode = $doc.CreateNode("element","NetworkInterface",$null)
+      $netAdapterNode = $XML.CreateNode("element","NetworkInterface",$null)
       $propsNetInterface | Foreach {
       if ($dataNetAdapter.$_) {
-        $e = $doc.CreateElement($_)
+        $e = $XML.CreateNode("element",$_,$null)
         $e.InnerText = $dataNetAdapter.$_
         $netAdapterNode.AppendChild($e) | Out-Null
        }
       }
       $dataNetConfig = $dataNetConfigs | where {$_.MACAddress -eq $dataNetAdapter.MACAddress}
       if ($dataNetConfig) {
-        $netAdapterConfNode = $doc.CreateNode("element","NetworkInterfaceConfig",$null)
+        $netAdapterConfNode = $XML.CreateNode("element","NetworkInterfaceConfig",$null)
         $propsNetConf | Foreach {
           if ($dataNetConfig.$_ -and !($_ -eq "MACAddress")) {
-            $e = $doc.CreateElement($_)
+            $e = $XML.CreateElement($_)
             $e.InnerText = $dataNetConfig.$_
             $netAdapterConfNode.AppendChild($e) | Out-Null
           }
@@ -163,16 +241,16 @@ function Get-Invetary {
       $($($hashOpenPorts[$protocol])[$ip])[$port]+= $pidOpen
     }
     foreach($protocolKey in $hashOpenPorts.Keys) {
-        $csOpenProtocol = $doc.CreateNode("element","Protocol",$null)
+        $csOpenProtocol = $XML.CreateNode("element","Protocol",$null)
         $csOpenProtocol.SetAttribute("Name",$protocolKey) | Out-Null
         foreach($ipKey in $($hashOpenPorts[$protocolKey]).Keys ) {
-          $csOpenIp = $doc.CreateNode("element","IP",$null)
+          $csOpenIp = $XML.CreateNode("element","IP",$null)
           $csOpenIp.SetAttribute("Address",$ipKey) | Out-Null
           foreach($portKey in $($($hashOpenPorts[$protocolKey])[$ipKey]).Keys ) {
-            $csOpenPort = $doc.CreateNode("element","Port",$null)
+            $csOpenPort = $XML.CreateNode("element","Port",$null)
             $csOpenPort.SetAttribute("Number",$portKey) | Out-Null
             foreach($openPid in $($($($hashOpenPorts[$protocolKey])[$ipKey])[$portKey])) {
-              $csOpenPid = $doc.CreateNode("element","ProcessID",$null)
+              $csOpenPid = $XML.CreateNode("element","ProcessID",$null)
               $csOpenPid.InnerText = $openPid
               $csOpenPort.AppendChild($csOpenPid) | Out-Null
             }
@@ -190,42 +268,32 @@ function Get-Invetary {
     $c.AppendChild($csnode) | Out-Null
 
     #create node for services
-    $svcnode = $doc.CreateNode("element","Services",$null)
+    $svcnode = $XML.CreateNode("element","Services",$null)
  
     #get a list of properties except PSComputername
-    $props = ($services[0] | Get-Member -MemberType Properties | where Name -ne 'PSComputername').Name
- 
-    $data = $services.where({$_.pscomputername -eq $Computer})
+    $props = ($wmiData.Win32_Service[0] | Get-Member -MemberType Properties | where Name -ne 'PSComputername').Name
+    $data =  $wmiData.Win32_Service | where({$_.pscomputername -eq $Computer})
     foreach ($item in $data) {
      #create a service node
-     $s = $doc.CreateNode("element","Service",$null)
- 
+     $s = $XML.CreateNode("element","Service",$null)
      #create elements for each property
      $props | Foreach {
-       $e = $doc.CreateElement($_)
+       $e = $XML.CreateElement($_)
        $e.InnerText = $item.$_
        $s.AppendChild($e) | Out-Null
      }
- 
      #add to parent
      $svcnode.AppendChild($s) | Out-Null
     }
- 
     #add to grandparent
     $c.AppendChild($svcnode) | Out-Null
- 
     #append to root
     $root.AppendChild($c) | Out-Null
   } #foreach computer
- 
-  #add root to the document
-  $doc.AppendChild($root) | Out-Null
- 
+  #add root to the XMLument
+  $XML.AppendChild($root) | Out-Null
   #save file
-  Write-Host "Saving the XML document to $Out" -ForegroundColor Green
-  $doc.save($Out)
- 
-  Write-Host "Finished!" -ForegroundColor green
+  $XML.save($Out)
 }
 
 Get-Invetary
