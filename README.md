@@ -1,2 +1,2 @@
 # PowerShell Scripts
-##A script's list for datacenter management.
+## An script's list for datacenter management.
