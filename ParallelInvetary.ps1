@@ -89,4 +89,3 @@ workflow paralleltest {
  }
  return $wmiValues
 }
-paralleltest -ServersNames (Get-Content "C:\Users\pb003283\Documents\myservers.txt")
