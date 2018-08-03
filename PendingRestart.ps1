@@ -1,4 +1,16 @@
-function Test-PendingReboot
+<#
+.SYNOPSIS
+    Retrieves information about pending restart on local computer.
+.DESCRIPTION
+    This function search in Windows Register informations about the need to restart the local machine.
+.EXAMPLE
+    C:\PS> Get-PendingReboot
+.OUTPUTS
+    True if there are need to restart the machine, or false if not.
+.LINK
+    https://github.com/guinamen/PowerShell/
+#>
+function Get-PendingReboot
 {
  if (Get-ChildItem "HKLM:\Software\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending" -EA Ignore) { return $true }
  if (Get-Item "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired" -EA Ignore) { return $true }
@@ -10,6 +22,5 @@ function Test-PendingReboot
      return $true
    }
  }catch{}
- 
  return $false
 }
