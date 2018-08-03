@@ -1,5 +1,5 @@
 function Get-PendingUpdate {
-  $temp = "" | Select Title,KB,Priority,RebootBehavior,IsDownloaded
+  $temp = $null
   try {
     #Create Session COM object 
     $updatesession = [activator]::CreateInstance([type]::GetTypeFromProgID("Microsoft.Update.Session",'localhost'))
@@ -8,6 +8,7 @@ function Get-PendingUpdate {
     # Configure Searcher object to look for Updates awaiting installation 
     $searchresult = $updatesearcher.Search("IsInstalled=0")
     if ($searchresult.Updates.Count -gt 0) {
+      $temp = "" | Select Title,KB,Priority,RebootBehavior,IsDownloaded
       for ($i=0; $i -lt $searchresult.Updates.Count; $i++) {
         # Create object holding update 
         $update = $searchresult.Updates.Item($i)
